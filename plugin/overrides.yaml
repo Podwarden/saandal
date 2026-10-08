@@ -1,0 +1,216 @@
+# Description overrides for the router plugin (read once at process start —
+# gateway restart required to pick up edits).
+#
+# Overrides replace tool and parameter descriptions everywhere schemas are
+# served: the flat agent.tools array, tool_describe output, and the
+# tool_search catalog/BM25 index. The three bridge tools (tool_search,
+# tool_describe, tool_call) are overridable too — they are synthesized in
+# tool_search.bridge_tool_schemas, which the plugin wraps.
+#
+# Schema:
+#   tools:
+#     <tool_name>:
+#       description: "replaces the tool's description"        # optional
+#       params:                                               # optional
+#         <param_name>: "replaces parameters.properties.<param>.description"
+#
+# Missing file or empty `tools:` mapping = no-op. Malformed entries are
+# logged as warnings and skipped (never fatal). Overriding a tool with a
+# dynamic description (e.g. delegate_task) replaces the dynamic text —
+# make sure a static rewrite is really what you want there.
+#
+# Provenance: 15 entries below are the adversarially reviewed set of
+# 2026-07-18 (docs/review_report.md): terminal + delegate_task fixed vs
+# draft (delegate_task rewritten CONFIG-NEUTRAL — static overrides win over
+# dynamic_schema_overrides at serve time, so no literal config values here);
+# execute_code rejected (its entry is rebuilt by build_execute_code_schema
+# AFTER the overrides apply, so an override there can never be served).
+# The tool_call entry (incident 2026-07-18) embeds the literal expected call
+# shape; the deferred-names index is appended to tool_search's description at
+# assembly time, not tool_call's, so the static text below cannot clash.
+
+tools:
+  clarify:
+    description: |-
+      Ask the user a question when you need clarification, feedback, or a decision before proceeding. Two modes: multiple choice (up to 4 `choices`; the UI auto-appends a 5th 'Other — type your answer' option) or open-ended (omit `choices`; user types free-form text).
+      CRITICAL: put options ONLY in the `choices` array — NEVER enumerate them inside `question`. The UI renders `choices` as selectable rows; options written into the question string are dead prose the user can't pick. Right: question='Which deployment target?', choices=['staging','prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].
+      Use when: the task is ambiguous, a decision has meaningful trade-offs, you want post-task feedback, or you offer to save a skill / update memory. Do NOT use for yes/no confirmation of dangerous commands (the terminal tool handles that). When stakes are low, make a reasonable default choice yourself.
+    params:
+      question: "The question text ONLY (e.g. 'Which deployment target?') — never embed answer options here; pass them in `choices`."
+      choices: "REQUIRED whenever presenting selectable options: one option per element, max 4. UI renders them as pickable rows and auto-appends 'Other (type your answer)'. Omit entirely ONLY for a genuinely open-ended free-text question."
+
+  todo:
+    description: |-
+      Session task list. Use for complex tasks with 3+ steps or when the user gives multiple tasks. Call with no parameters to read the current list; pass 'todos' to create/update. merge=false (default) replaces the entire list with a fresh plan; merge=true updates existing items by id and adds new ones. Item shape: {id, content, status: pending|in_progress|completed|cancelled}. List order is priority; only ONE item in_progress at a time; mark items completed immediately when done; if something fails, cancel it and add a revised item. Always returns the full current list.
+    params:
+      todos: "Items to write; omit to read the current list."
+
+  memory:
+    description: |-
+      Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn — keep entries compact and high-signal.
+      HOW: make ALL changes in ONE call via the 'operations' array (items: {action, content?, old_text?}). The batch applies atomically and the char limit is checked only on the FINAL result, so one call can remove/replace stale entries to free room AND add new ones even when the add alone would overflow. The response reports current/limit chars and confirms completion — one batch finishes the update, do not repeat it. Bare action/content/old_text fields are for a single lone change only.
+      WHEN: save proactively on user preferences, corrections, personal details, or stable facts about their environment, conventions, workflow. Priority: preferences & corrections > environment facts > procedures. The best memory stops the user repeating themselves.
+      IF FULL: the add is rejected and current entries are shown — reissue ONE batch that removes/shortens stale entries and adds the new one together.
+      TARGETS: 'user' = who the user is (name, role, preferences, style); 'memory' = your notes (environment, conventions, tool quirks, lessons).
+      SKIP: trivial/obvious or easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state (use session_search for those). Reusable procedures belong in a skill, not memory.
+    params:
+      action: "Single-op shape only; omit when using 'operations'."
+      target: "'memory' = your personal notes, 'user' = user profile."
+      content: "Entry content; required for 'add' and 'replace' (single-op shape)."
+      old_text: "Short unique substring identifying the existing entry. REQUIRED for 'replace' and 'remove' (single-op shape); omit only for 'add'."
+      operations: "Batch shape: operations applied atomically in one call against the final char budget — preferred for multiple changes or consolidating to free room. Items: {action, content?, old_text?}."
+
+  vision_analyze:
+    description: |-
+      Load an image into the conversation so you can see it. Accepts an http(s) URL, local file path, or data: URL. When the active model has native vision, the image attaches directly to your context and you read the pixels yourself next turn — call this whenever the user references an image (filepath in their message, URL in tool output, browser screenshot, etc.). Non-vision models fall back to an auxiliary vision model that returns a text description.
+    params:
+      image_url: "Image http/https URL, local file path, or data: URL."
+      question: "Your specific question or request about the image; used as context on the next turn after the image is seen."
+
+  text_to_speech:
+    description: |-
+      Convert text to speech audio. Returns a MEDIA: path the platform delivers as native audio — a voice bubble on compatible providers (e.g. Telegram), otherwise a regular attachment; CLI mode saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai, or custom command providers under tts.providers.<name>), not model-selected.
+    params:
+      text: "Text to speak. Provider character caps are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+      output_path: "Optional custom save path; default ~/.hermes/audio_cache/<timestamp>.mp3."
+
+  terminal:
+    description: |-
+      Execute shell commands on a Linux environment. Filesystem, cwd, and exported environment variables persist between calls — activate a virtualenv or export setup vars once per session; do not re-source before every command unless a command proves shell state was reset.
+      Use dedicated tools, not the shell: read_file (not cat/head/tail), search_files (not grep/rg/find), search_files(target='files') (not ls), patch (not sed/awk), write_file (not echo/cat heredoc). Reserve terminal for builds, installs, git, processes, scripts, network, package managers — anything that needs a shell.
+      Foreground (default): returns INSTANTLY when the command finishes even if timeout is high — set timeout=300 for long builds/scripts and you still get the result in seconds when the command is quick. Prefer foreground for short commands.
+      Background: background=true returns a session_id. Almost always pair with notify_on_complete=true — background without notify runs SILENTLY and only process(action='poll') would reveal completion. Two legitimate uses: (1) processes that never exit (servers, watchers, daemons) — silent is correct, there is no exit; (2) long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true or you will forget to poll.
+      For servers/watchers do NOT use nohup/disown/setsid/trailing '&' in foreground — use background=true so Hermes tracks lifecycle and output. After starting a server, verify readiness via a health check or log signal, then run tests in a separate terminal() call; avoid blind sleep loops. Check progress with process(action='poll'); block with process(action='wait').
+      'workdir' sets per-command cwd. pty=true for interactive CLI tools (Codex, Claude Code, Python REPL) — vim/nano/interactive tools hang without a pseudo-terminal. Pipe git output to cat if it might page.
+    params:
+      command: "The shell command to execute on the VM."
+      background: "Run in background, returning a session_id. Almost always pair with notify_on_complete=true — without it the process runs silently and you must remember to call process(action='poll') yourself (easy to forget on long jobs). Legitimate uses: (1) never-exiting processes (servers/watchers/daemons; silent is correct), (2) long bounded tasks (tests/builds/deploys/CI/batch) which MUST set notify_on_complete=true. Short commands: prefer foreground with a generous timeout."
+      timeout: "Max seconds to wait (default 180, foreground max 600 — higher is rejected; use background=true for longer). Returns instantly when the command finishes, so set high for long tasks without waiting unnecessarily."
+      workdir: "Absolute path used as this command's working directory; defaults to the session working directory."
+      pty: "Run in pseudo-terminal (PTY) mode for interactive CLI tools (Codex, Claude Code, Python REPL). Local and SSH backends only. Default false."
+      notify_on_complete: "With background=true: exactly one automatic notification when the process exits. The right choice for almost every long-running bounded task (tests, builds, deploys, batch jobs, anything >1 min with a defined end) — keep working meanwhile. MUTUALLY EXCLUSIVE with watch_patterns; if both are set, watch_patterns is dropped."
+      watch_patterns: "Strings to watch for in background output. HARD RATE LIMIT: max 1 notification per 15 s per process — matches inside the cooldown are dropped; after 3 consecutive 15 s windows with drops, watch_patterns is auto-disabled for that process and promoted to notify_on_complete behavior (one exit notification, no more mid-process spam). ONLY for rare one-shot mid-process signals on LONG-LIVED never-exiting processes — e.g. ['Application startup complete'] on a server, ['migration done'] on a daemon. DO NOT use for end-of-run markers ('DONE'/'PASS' — use notify_on_complete), for error patterns ('ERROR'/'Traceback') in loops/batch jobs (fires every iteration, hits the strike limit fast), or combined with notify_on_complete (MUTUALLY EXCLUSIVE — set one, not both). When in doubt, choose notify_on_complete."
+
+  process:
+    description: |-
+      Manage background processes started with terminal(background=true). Actions: 'list' (show all), 'poll' (status + new output), 'log' (full output, paginated), 'wait' (block until done or timeout), 'kill' (terminate), 'write' (raw stdin, no newline), 'submit' (stdin + Enter, for answering prompts), 'close' (close stdin / send EOF).
+    params:
+      session_id: "From terminal background output. Required for every action except 'list'."
+      data: "Text sent to process stdin ('write'/'submit')."
+      timeout: "Max seconds to block for 'wait'; returns partial output on timeout."
+      offset: "Line offset for 'log' (default: last 200 lines)."
+      limit: "Max lines returned by 'log'."
+
+  read_file:
+    description: |-
+      Read a text file with line numbers and pagination; output format 'LINE_NUM|CONTENT'. Use instead of cat/head/tail in terminal. Suggests similar filenames when the path is not found. Reads over ~100K characters truncate on a line boundary and return next_offset — continue with offset to read the rest. Jupyter notebooks (.ipynb), Word (.docx), and Excel (.xlsx) auto-extract to readable text. Cannot read images or other binary files — use vision_analyze for images.
+    params:
+      path: "File path: absolute, relative, or ~/path."
+      offset: "Line number to start from (1-indexed, default 1)."
+      limit: "Max lines to read (default 500, max 2000)."
+
+  write_file:
+    description: |-
+      Write content to a file, REPLACING its entire existing content — use 'patch' for targeted edits. Use instead of echo/cat heredoc in terminal. Creates parent directories automatically. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors filtered out).
+    params:
+      path: "File path; created if missing, overwritten if present."
+      content: "Complete content to write."
+      cross_profile: "Default false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — such writes are otherwise blocked with a warning (cross-profile soft guard)."
+
+  search_files:
+    description: |-
+      Search file contents or find files by name; ripgrep-backed, faster than shell — use instead of grep/rg/find/ls in terminal. target='content' (default): regex search inside files; output modes give matching lines with line numbers, file paths only, or match counts. target='files': find files by glob (e.g. '*.py', '*config*'), sorted by modification time — also use this instead of ls.
+    params:
+      pattern: "Regex for content search, or glob (e.g. '*.py') for file search."
+      target: "'content' searches inside files; 'files' finds files by name."
+      path: "Directory or file to search (default: current working directory)."
+      file_glob: "Content mode: restrict which files are searched (e.g. '*.py')."
+      limit: "Max results (default 50)."
+      offset: "Skip first N results for pagination (default 0)."
+      output_mode: "Content mode: 'content' = matching lines with line numbers, 'files_only' = file paths, 'count' = match counts per file."
+      context: "Context lines before and after each match (content mode only)."
+
+  patch:
+    description: |-
+      Targeted find-and-replace edits in files; use instead of sed/awk in terminal. Fuzzy matching (9 strategies) tolerates minor whitespace/indentation differences. Returns a unified diff and auto-runs syntax checks after editing. mode='replace' (default): find a unique string and replace it — requires mode, path, old_string, new_string. mode='patch': apply V4A multi-file patches for bulk changes — requires mode, patch.
+    params:
+      mode: "'replace' (default) needs path + old_string + new_string; 'patch' needs patch content only."
+      path: "REQUIRED when mode='replace': file to edit."
+      old_string: "REQUIRED when mode='replace': exact text to find; must be unique in the file unless replace_all=true — include surrounding context lines for uniqueness."
+      new_string: "REQUIRED when mode='replace': replacement text; pass '' to delete the matched text."
+      replace_all: "Replace all occurrences instead of requiring a unique match (default false)."
+      cross_profile: "Default false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories (otherwise blocked with a warning)."
+
+  session_search:
+    description: |-
+      Search past sessions in the local session DB, or scroll inside one. FTS5 retrieval over the SQLite message store; no LLM calls — every shape returns actual stored messages.
+      SOURCE-FIRST LIMIT: this searches Hermes conversation history only — it is NOT evidence about the current contents of external sources. If the user gave a direct source (URL, phone number/contact, app/thread, file path, account, website, live system), inspect that source first when accessible; use session_search only as secondary context for what was previously said. If the source is inaccessible, say so and why before falling back. Never conclude 'not found' / 'no prior correspondence' from session_search alone when a direct source was provided.
+      FOUR SHAPES:
+      1) DISCOVERY — pass `query` (e.g. query='auth refactor', limit=3): FTS5 search, deduped by session lineage, top-N sessions. Each result: session_id, title, when, source; snippet (FTS5-highlighted excerpt); bookend_start (first 3 user+assistant messages = goal/kickoff); messages (±5 around the match, anchor flagged); bookend_end (last 3 = resolution/decisions); match_message_id, messages_before, messages_after. Bookends + window reconstruct goal → match → resolution without reading the whole transcript.
+      2) SCROLL — pass `session_id` + `around_message_id` (+window): returns ±window messages around the anchor; no FTS5, no bookends. Scroll FORWARD by passing messages[-1].id as the next around_message_id; BACKWARD with messages[0].id. The boundary message appears in both windows (orientation marker). messages_before or messages_after < window means you reached the session start/end.
+      3) READ — pass `session_id` only: dumps the whole session (first 20 + last 10 messages when large). Resolves an `@session:<profile>/<id>` link: split on '/' → call session_search(session_id=id, profile=profile).
+      4) BROWSE — no args: recent sessions chronologically (titles, previews, timestamps) for "what was I working on".
+      FTS5 SYNTAX: multi-word = AND by default; use OR for broader recall (alpha OR beta), quoted phrases for exact match ("docker networking"), NOT (python NOT java), prefix wildcards (deploy*).
+      USE for questions about Hermes conversation history ("what did we do about X", "where did we leave Y", "find the session where Z"). The session DB carries what was said when; external tools show current source/world state.
+    params:
+      query: "Discovery shape: keywords, phrases, or boolean FTS5 expression. Omit to browse recent sessions; ignored when session_id + around_message_id are set (scroll shape)."
+      limit: "Discovery only: max sessions returned (default 3, max 10). Use 5-10 when the topic likely spans several sessions."
+      sort: "Discovery only: temporal bias on top of FTS5 ranking. Omit = relevance-only (exploratory recall); 'newest' for recency questions ('where did we leave X'); 'oldest' for origin questions ('how did X start'). Ignored in scroll/browse."
+      session_id: "Session to read inside (from a prior discovery result). With around_message_id = scroll shape; alone = read shape (whole-session dump)."
+      around_message_id: "Scroll shape: message id to center the window on — match_message_id from discovery, or any id from a prior window. Pass the last window message's id to scroll forward, the first to scroll backward."
+      window: "Scroll only: messages on each side of the anchor (anchor always included). Clamped to [1, 20]; default 5."
+      role_filter: "Comma-separated roles to include. Discovery defaults to 'user,assistant' (tool output is usually noise); 'user,assistant,tool' to include tool output (debugging), 'tool' to search tool output only."
+      profile: "Read another Hermes profile's DB (read-only) — e.g. the profile segment of an `@session:<profile>/<id>` link. Omit for the current profile."
+
+  # NOTE: this static text intentionally WINS over the registry's
+  # dynamic_schema_overrides at serve time (plugin wraps get_definitions
+  # read-time). Therefore it must stay CONFIG-NEUTRAL: never state literal
+  # values of delegation.max_concurrent_children / max_spawn_depth /
+  # orchestrator_enabled here — point at the config keys instead.
+  delegate_task:
+    description: |-
+      Spawn one or more subagents that work on tasks in isolated contexts — each gets its own conversation, terminal session, and toolset; only the final summary returns, intermediate tool results never enter your context window.
+      TWO MODES (one of 'goal' or 'tasks' required): single task via 'goal' (+ optional context, toolsets); or parallel batch via 'tasks' — concurrency is capped by delegation.max_concurrent_children in config.yaml. Whether children may delegate further is governed by delegation.max_spawn_depth: at the depth limit every child is a leaf and cannot delegate further.
+      BOTH MODES RUN IN THE BACKGROUND: delegate_task returns immediately, and each subagent's full result re-enters the conversation as its own new message when it finishes (a batch = N independent handles). Do NOT wait or poll — continue other work.
+      USE for: reasoning-heavy subtasks (debugging, code review, research synthesis); work that would flood your context with intermediate data; parallel independent workstreams.
+      DO NOT USE for: mechanical multi-step work with no reasoning (use execute_code); a single tool call (call it directly); tasks needing user interaction (subagents cannot use clarify); durable work that must outlive the turn (use cronjob action='create' or terminal(background=true, notify_on_complete=true)). Background delegations are NOT durable: closing the parent session (/new) or process exit discards unfinished subagent work, and /stop cancels every running background subagent.
+      IMPORTANT: Subagents have NO memory of your conversation — pass all relevant info (file paths, error messages, constraints) via 'context'. If the user writes in a non-English language or asked for a specific language/tone/style, say so in 'context' (e.g. "respond in Chinese") or summaries default to English and contaminate your reply. Subagent summaries are SELF-REPORTS, not verified facts: for operations with external side-effects (HTTP POST/PUT, remote writes, files at shared paths, publishing), require a verifiable handle (URL, ID, absolute path, HTTP status) and verify it yourself (fetch, stat, read back) before reporting success. Leaf subagents (role='leaf', default) CANNOT call delegate_task, clarify, memory, send_message, execute_code; orchestrators (role='orchestrator') regain delegate_task only — still bounded by delegation.max_spawn_depth, and disabled globally via delegation.orchestrator_enabled=false.
+      Subagent model is NOT selectable per call: children inherit the parent model and its fallback chain unless pinned via delegation.provider / delegation.model in config.yaml. Each subagent gets its own terminal session (separate cwd and state). Results always return as an array, one entry per task.
+    params:
+      goal: "What the subagent should accomplish — specific and self-contained; it knows nothing of your conversation history."
+      context: "Everything the subagent needs: file paths, error messages, project structure, constraints. More specific = better results."
+      tasks: "Batch mode: tasks run in parallel (concurrency capped by delegation.max_concurrent_children in config.yaml), each in its own subagent with isolated context and terminal session. When set, top-level goal/context/toolsets are ignored."
+      role: "'leaf' (default) = focused worker, cannot delegate further. 'orchestrator' = may spawn its own workers via delegate_task, allowed only within delegation.max_spawn_depth — beyond the configured depth 'orchestrator' is silently forced to 'leaf'."
+      background: "DEPRECATED / IGNORED: single-task delegations always run in the background; the result re-enters the conversation as a new message when done. Kept only for backward compatibility — setting it has no effect."
+
+  skill_view:
+    description: |-
+      Load a skill's full content or its linked files. Skills carry task/workflow instructions plus scripts and templates. First call (name only) returns SKILL.md and a 'linked_files' dict of available references/templates/scripts; call again with file_path to fetch one of those.
+    params:
+      name: "Skill name (see skills_list). Plugin skills use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans')."
+      file_path: "Optional path to a linked file within the skill (e.g. 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'); omit for the main SKILL.md."
+
+  skill_manage:
+    description: |-
+      Manage skills (create, update, delete) — your procedural memory of reusable approaches for recurring task types. New skills go to ~/.hermes/skills/; existing skills are modified wherever they live.
+      Actions: create (full SKILL.md + optional category), patch (old_string/new_string — preferred for fixes), edit (full SKILL.md rewrite — major overhauls only), delete, write_file, remove_file.
+      DELETE: pass absorbed_into=<umbrella> when merging this skill's content into another (the target must already exist — create/patch the umbrella first, then delete), or absorbed_into='' when pruning with no forwarding target. This lets the curator distinguish consolidation from pruning so downstream consumers (e.g. cron jobs referencing the old skill name) get updated correctly.
+      Create when: a complex task succeeded (5+ calls), errors were overcome, a user-corrected approach worked, a non-trivial workflow emerged, or the user asks you to remember a procedure. Update when: instructions are stale/wrong, OS-specific failures, or missing steps/pitfalls surface — if you used a skill and hit uncovered issues, patch it immediately. After difficult/iterative tasks, offer to save as a skill; skip simple one-offs; confirm with the user before creating/deleting.
+      Good skills: trigger conditions, numbered steps with exact commands, a pitfalls section, verification steps — see skill_view() for format examples.
+      Pinned skills are protected from deletion only: delete refuses with a message pointing to `hermes curator unpin <name>`; patch/edit still go through so you can keep improving them.
+    params:
+      name: "Lowercase, hyphens/underscores, max 64 chars. Must match an existing skill for patch/edit/delete/write_file/remove_file."
+      content: "Full SKILL.md (YAML frontmatter + markdown body). Required for 'create' and 'edit'; for 'edit', read the skill first via skill_view() and supply the complete updated text."
+      old_string: "'patch': text to find; must be unique unless replace_all=true — include surrounding context for uniqueness."
+      new_string: "'patch': replacement text; '' deletes the matched text."
+      replace_all: "'patch': replace all occurrences instead of requiring a unique match (default false)."
+      category: "'create' only: optional category/domain (e.g. 'devops', 'data-science') creating a subdirectory grouping."
+      file_path: "'write_file'/'remove_file': required, must be under references/, templates/, scripts/, or assets/. 'patch': optional, defaults to SKILL.md."
+      file_content: "File content; required for 'write_file'."
+      absorbed_into: "'delete' only: umbrella skill name the content merged into (must already exist), or '' when pruning with no forwarding target. Omitting is allowed for back-compat but downstream tooling (e.g. cron-job skill-reference rewriting) must guess intent."
+
+  # Bridge tool: teaches the exact call shape (incident 2026-07-18 —
+  # local-27b looped on nested/double-wrapped tool_call arguments).
+  tool_call:
+    description: |-
+      Invoke a deferred tool by name. EXACT shape: {"name": "terminal", "arguments": {"command": "echo hi"}} — top-level "name" is the tool to invoke and the tool's OWN parameters go INSIDE the "arguments" object. Never nest another "name" or "arguments" wrapper inside "arguments". Argument shape matches the tool's schema (see tool_describe). Policy, hooks, and approvals run exactly as for any directly-listed tool.

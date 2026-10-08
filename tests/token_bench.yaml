@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) Podwarden Inc
+#
+# token_bench.yaml — a DURABLE, categorized, deterministic prompt set for
+# measuring per-turn TOKEN CONSUMPTION with vs without saandal on the same
+# model. Run it with tests/token_bench.py (NOT run_corpus.py — that harness
+# judges reliability; this one measures tokens).
+#
+# WHY THESE CATEGORIES
+# --------------------
+# The token profile of a turn depends on its SHAPE, and saandal's router and
+# reliability layer touch each shape differently:
+#   TRIVIAL      1 api call, no tool. Pure schema-floor turn: fresh-input is
+#                almost entirely the tool payload. Where the router's ~46KB->
+#                ~10KB collapse shows up most cleanly.
+#   SINGLE_TOOL  one keep-list tool call (todo/terminal). Under saandal the
+#                tool is in the keep-list so NO tool_search bridge round-trip is
+#                added — isolates "router saving with one cheap tool".
+#   RESEARCH     multi web_search + web_extract. Tool-heavy: under saandal a
+#                non-keep-list tool must be discovered via the tool_search /
+#                tool_describe / tool_call bridge, which can ADD api round-trips
+#                and tokens. This is where net token effect can flip.
+#   CODING       produce a small script. Exercises the coding-mode caps and the
+#                (usually keep-list-light) file/terminal tools.
+#   LONG_OUTPUT  a big structured table. Output-dominated: exercises the
+#                max_tokens_cap / anti-tail-collapse path; fresh-input saving is
+#                a smaller fraction of the total here.
+#
+# DETERMINISM / SIDE-EFFECTS
+# --------------------------
+# Prompts are worded to be reproducible in SHAPE (same tool classes, similar
+# output size) and side-effect-light. Any writes (todo rows, a scratch file)
+# land only in the throwaway measurement HOME, never the live bots. Content of
+# RESEARCH answers varies with the live web; the token SHAPE does not, which is
+# what we measure. Each prompt runs as its own fresh one-shot session, so
+# counts are per-prompt clean and never accumulate across the set.
+
+categories:
+
+  TRIVIAL:            # 1 api call, no tool — pure schema-floor turn
+    - "What is 17 times 23? Reply with just the number, nothing else."
+    - "Convert 100 kilometers to miles. Reply with just the number rounded to two decimals."
+    - "How many minutes are there in 3.5 hours? Reply with just the integer."
+
+  SINGLE_TOOL:        # exactly one keep-list tool call (no bridge round-trip)
+    - "Use the terminal tool to run the command `echo hermes-token-bench-ok` and report the exact stdout it produced."
+    - "Add a todo list containing exactly these three items: buy milk, call the dentist, submit the report. Then tell me the three items you added."
+    - "Use the terminal tool to run `date -u +%Y-%m-%d` and report the single date string it printed."
+
+  RESEARCH:           # multi web_search + web_extract — tool-heavy / bridge path
+    - "Search the web for the current latest stable version number of the Python programming language, and give me the version plus the source URL you used."
+    - "Research which country hosted the most recent Summer Olympic Games and in which year, and confirm it against at least two different sources with their URLs."
+    - "Find the current approximate population of Tokyo from a recent source, state the figure, the year it refers to, and the source URL."
+
+  CODING:             # produce a small script — coding-mode path
+    - "Write a Python function is_palindrome(s) that returns True when a string is a palindrome ignoring case and spaces, and show three example calls with their outputs. Include the full code in your reply."
+    - "Write a Python script that prints the FizzBuzz sequence for the numbers 1 through 20. Include the complete runnable code in your reply."
+    - "Write a bash one-liner that counts the number of lines in a file whose path is given as the first argument $1, and explain briefly how it works. Include the exact command."
+
+  LONG_OUTPUT:        # big structured table — output-dominated turn
+    - "Produce a markdown table of the 20 most populous countries in the world. Columns: Rank, Country, Approximate Population, Continent. Fill in all 20 rows."
+    - "Produce a markdown table of the chemical elements with atomic numbers 1 through 30. Columns: Atomic Number, Symbol, Name, Atomic Mass. Fill in all 30 rows."
+    - "Produce a markdown table of all 12 calendar months. Columns: Month, Number of Days (non-leap year), Season in the Northern Hemisphere, Zodiac signs that fall within that month. Fill in all 12 rows."

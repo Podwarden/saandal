@@ -1,0 +1,28 @@
+# secrets / local env — NEVER commit
+.env
+.env.*
+*.pat
+*.token
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# venvs
+.venv/
+venv/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# os / editor
+.DS_Store
+*.swp
+.git-askpass.sh

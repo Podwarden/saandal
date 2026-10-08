@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline-tests:
+    name: Offline unit suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Runtime deps the plugin/tests may import. hermes-agent is the host
+          # framework the plugin plugs into; installed so the real import paths
+          # resolve. The gateway_harness (live-server) tests are NOT run here.
+          pip install ruamel.yaml openai ddgs
+          pip install hermes-agent || echo "hermes-agent not required for the offline suites"
+
+      - name: Run offline unit suites
+        run: |
+          set -e
+          for t in tests/test_router_regression.py \
+                   tests/test_selfheal_unit.py \
+                   tests/test_progress_unit.py \
+                   tests/test_loadaware_unit.py \
+                   tests/test_harness_seed.py \
+                   tests/test_monkeypatch_unit.py; do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
+          done
